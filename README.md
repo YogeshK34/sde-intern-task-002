@@ -155,3 +155,15 @@ You must understand every line you submit. We check this with your video and in 
 5. Paste the repository link and the video link in the application form.
 
 We will run `pnpm install && pnpm check && pnpm typecheck && pnpm test` on your repository.
+
+
+## Decisions
+
+**1. Idempotency key as a column on the `shares` table**
+I stored the `Idempotency-Key` header value directly on the `shares` table rather than a separate lookup table, since the 1-to-1 mapping between a share and a payment is exact. The payment flow uses an atomic `UPDATE shares SET paid_at = ?, idempotency_key = ? WHERE id = ? AND paid_at IS NULL`. If `changes === 0`, I query the row, if the stored key matches the incoming header I return `200` with the existing share data (idempotent replay); if the key differs I return `409 Conflict`. The `UNIQUE` constraint on `idempotency_key` acts as a secondary safety net for concurrent requests with different keys that both pass the application-level check simultaneously.
+
+**2. D1 batch insert for bill + shares atomicity**
+Cloudflare D1 does not support interactive `BEGIN / COMMIT` transactions over HTTP. To guarantee that a bill and its shares always land together, I generate all UUIDs in the Worker with `crypto.randomUUID()` before building the query, then execute the bill insert and all share inserts inside a single `c.env.DB.batch([...])` call. D1 runs a batch atomically, if any statement fails, none of them commit, so a bill with missing or partial shares is impossible.
+
+**3. Explicit `order_index` column on members**
+Member join order drives two things: which members get the extra cents when a bill doesn't divide evenly, and the order of the balances response. I store this as an explicit `order_index INTEGER` column assigned at insert time. Relying on implicit `ROWID` ordering is fragile across joins and subqueries. A concurrent `POST /members` race is covered by the `UNIQUE(home_id, order_index)` constraint on the schema, one of the two inserts will fail cleanly rather than silently corrupting the order.

@@ -27,7 +27,6 @@ export async function call<Body = unknown>(
   return { status: response.status, body: parseJson(text) as Body }
 }
 
-// A route that does not exist answers with plain text, so a failed parse gives null.
 function parseJson(text: string): unknown {
   try {
     return JSON.parse(text)
